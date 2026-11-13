@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OCR Frame Inspector</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to inspection workspace</a>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="4" width="20" height="16" rx="2" />
+            <path d="M7 9h4M7 13h10M15 9h2" />
+          </svg>
+        </span>
+        <div>
+          <h1 class="brand-title">OCR Frame Inspector</h1>
+          <p class="brand-sub">Distinct on-screen text and @handle review</p>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <button type="button" id="open-scan-btn" class="btn btn-primary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          <span>Scan video or folder</span>
+        </button>
+
+        <button type="button" id="theme-toggle" class="btn btn-secondary" aria-pressed="false" aria-label="Switch color theme">
+          <svg id="theme-icon-sun" class="icon-hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+          </svg>
+          <svg id="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+          </svg>
+          <span id="theme-label">Dark mode</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside class="sidebar" aria-label="Scanned videos">
+      <div class="sidebar-head">
+        <h2 class="section-heading">Scanned videos</h2>
+        <span id="video-count-badge" class="count-pill">0</span>
+      </div>
+
+      <div class="sidebar-controls">
+        <label class="sr-only" for="video-search">Filter scanned videos</label>
+        <div class="search-field">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="8" />
+            <path d="M21 21l-4.35-4.35" />
+          </svg>
+          <input id="video-search" type="search" placeholder="Search name, @handle, or text" />
+        </div>
+
+        <div class="segmented" role="group" aria-label="Filter videos by move status">
+          <button type="button" class="seg-btn active" data-move-filter="unmoved">Unmoved</button>
+          <button type="button" class="seg-btn" data-move-filter="moved">Moved</button>
+          <button type="button" class="seg-btn" data-move-filter="all">All</button>
+        </div>
+
+        <div class="segmented" role="group" aria-label="Filter videos by text presence">
+          <button type="button" class="seg-btn active" data-video-filter="all">All</button>
+          <button type="button" class="seg-btn" data-video-filter="has_text">Has text</button>
+          <button type="button" class="seg-btn" data-video-filter="no_text">No text</button>
+        </div>
+
+        <div id="move-filter-summary" class="field-hint sidebar-summary" aria-live="polite"></div>
+      </div>
+
+      <div id="active-jobs" class="jobs-stack" aria-live="polite"></div>
+
+      <nav id="video-list" class="video-list" aria-label="Video list">
+        <div class="skeleton-list" aria-hidden="true">
+          <div class="skeleton-item"></div>
+          <div class="skeleton-item"></div>
+        </div>
+      </nav>
+    </aside>
+
+    <main id="main-content" class="main-panel" tabindex="-1">
+      <div id="error-banner" class="alert alert-error hidden" role="alert">
+        <div class="alert-body">
+          <strong id="error-title">Could not load data</strong>
+          <p id="error-message"></p>
+        </div>
+        <button type="button" id="error-dismiss" class="btn btn-secondary">Dismiss</button>
+      </div>
+
+      <div id="main-state"></div>
+    </main>
+  </div>
+
+  <dialog id="scan-dialog" class="modal" aria-labelledby="scan-dialog-title">
+    <form id="scan-form" method="dialog" class="modal-card" novalidate>
+      <div class="modal-header">
+        <h2 id="scan-dialog-title">Scan a video or folder</h2>
+        <button type="button" id="close-scan-btn" class="icon-btn" aria-label="Close scan dialog">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="form-group">
+        <label for="scan-path-input">Directory or single video path</label>
+        <div class="path-input-row">
+          <input
+            id="scan-path-input"
+            name="path"
+            type="text"
+            placeholder="E:\TeraBoxDownload\unsorted2"
+            required
+            autocomplete="off"
+          />
+          <button type="button" id="browse-scan-folder-btn" class="btn btn-secondary">Browse folder</button>
+          <button type="button" id="browse-scan-file-btn" class="btn btn-secondary">Browse file</button>
+        </div>
+        <p class="field-hint">Choose a folder to scan videos one by one, or select a single video file (.mp4, .mov, .mkv, .avi, .webm).</p>
+      </div>
+
+      <div class="form-group">
+        <label id="scan-mode-label">Scan mode</label>
+        <div class="segmented scan-mode-toggle" role="radiogroup" aria-labelledby="scan-mode-label">
+          <button type="button" class="seg-btn active" data-scan-mode="full_text" role="radio" aria-checked="true">Full video text</button>
+          <button type="button" class="seg-btn" data-scan-mode="handle_only" role="radio" aria-checked="false">Stop at @handle</button>
+        </div>
+        <p id="scan-mode-hint" class="field-hint">Scans all sampled frames to extract every distinct text overlay and @handle.</p>
+      </div>
+
+      <label class="checkbox-row">
+        <input id="skip-existing-input" type="checkbox" checked />
+        <span>Skip videos already scanned</span>
+      </label>
+
+      <details class="advanced-options">
+        <summary>Sampling and confidence options</summary>
+        <div class="options-grid">
+          <div class="form-group">
+            <label for="sample-fps-input">Sample rate (fps)</label>
+            <input id="sample-fps-input" type="number" min="0.5" max="6" step="0.5" value="2.0" />
+          </div>
+          <div class="form-group">
+            <label for="min-conf-input">Minimum confidence</label>
+            <input id="min-conf-input" type="number" min="0.2" max="0.95" step="0.05" value="0.55" />
+          </div>
+          <label class="checkbox-row">
+            <input id="recursive-input" type="checkbox" />
+            <span>Include subfolders when scanning a folder</span>
+          </label>
+        </div>
+      </details>
+
+      <p id="scan-form-error" class="form-error hidden" role="alert"></p>
+
+      <div class="modal-footer">
+        <button type="button" id="cancel-scan-btn" class="btn btn-secondary">Cancel</button>
+        <button type="submit" id="submit-scan-btn" class="btn btn-primary">Start scan</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="lightbox-dialog" class="modal modal-lightbox" aria-labelledby="lightbox-caption">
+    <div class="lightbox-card">
+      <div class="modal-header">
+        <h2 id="lightbox-caption" class="lightbox-title">Frame preview</h2>
+        <button type="button" id="close-lightbox-btn" class="icon-btn" aria-label="Close frame preview">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <div class="lightbox-img-wrap">
+        <img id="lightbox-img" src="" alt="Full-size frame example" />
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="fs-picker-dialog" class="modal modal-picker" aria-labelledby="fs-picker-title">
+    <div class="modal-card picker-card">
+      <div class="modal-header">
+        <h2 id="fs-picker-title">Select a folder</h2>
+        <button type="button" id="close-picker-btn" class="icon-btn" aria-label="Close folder browser">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="picker-nav-row">
+        <button type="button" id="picker-up-btn" class="btn btn-secondary">Up</button>
+        <input id="picker-path-input" type="text" class="picker-path-input" placeholder="Enter folder path or browse below" autocomplete="off" aria-label="Current directory path" />
+        <button type="button" id="picker-go-btn" class="btn btn-secondary">Open</button>
+      </div>
+
+      <div id="picker-quick-roots" class="picker-quick-roots" aria-label="Quick locations"></div>
+
+      <div class="picker-subbar">
+        <nav id="picker-breadcrumbs" class="picker-breadcrumbs" aria-label="Folder breadcrumbs"></nav>
+        <span id="picker-summary" class="field-hint"></span>
+      </div>
+
+      <div class="search-field">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="8" />
+          <path d="M21 21l-4.35-4.35" />
+        </svg>
+        <input id="picker-filter-input" type="search" placeholder="Filter folders or video files..." aria-label="Filter items in current folder" />
+      </div>
+
+      <p id="picker-error" class="form-error hidden" role="alert"></p>
+
+      <div id="picker-list" class="picker-list" role="listbox" aria-label="Directory contents"></div>
+
+      <div class="picker-footer">
+        <div class="picker-selection-wrap">
+          <span class="field-hint">Selected:</span>
+          <code id="picker-selected-label" class="picker-selected-code">None</code>
+        </div>
+        <div class="picker-footer-actions">
+          <button type="button" id="cancel-picker-btn" class="btn btn-secondary">Cancel</button>
+          <button type="button" id="confirm-picker-btn" class="btn btn-primary" disabled>Select this folder</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+[project]
+name = "ocr-scanner"
+version = "0.1.0"
+description = "Extract on-screen text and creator handles from videos, review frame detections, and sort clips into folders."
+authors = [
+    { name = "gumelartresnadwinanda", email = "gumelartresnadwinanda@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.162.4",
+    "onnxruntime>=1.31.1",
+    "opencv-python-headless>=5.0.0.93",
+    "pillow>=13.0.0",
+    "rapidfuzz>=3.14.6",
+    "rapidocr>=3.10.0",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+ocr-scanner = "ocr_scanner.cli:main"
+ocr-scanner-web = "ocr_scanner.web:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.2.0",
+]

@@ -5,6 +5,7 @@
   --bg-code: #f3f2ed;
   --text-primary: #14171f;
   --text-secondary: #4b5563;
+  --text-muted: #6b7280;
   --border: #ddd9ce;
   --accent: #1d4ed8;
   --accent-hover: #1e40af;
@@ -33,6 +34,7 @@ html[data-theme="dark"] {
   --bg-code: #0b0f14;
   --text-primary: #f0f6fc;
   --text-secondary: #9ca8b8;
+  --text-muted: #8b949e;
   --border: #2a323f;
   --accent: #2563eb;
   --accent-hover: #3b82f6;
@@ -300,10 +302,6 @@ body {
 
 .scan-mode-toggle {
   grid-template-columns: repeat(2, 1fr);
-}
-
-.scan-mode-toggle .seg-btn {
-  min-height: 44px;
 }
 
 .seg-btn {
@@ -991,7 +989,8 @@ body {
   font-weight: 600;
 }
 
-.form-group input {
+.form-group input,
+.picker-path-input {
   min-height: 44px;
   padding: 0 12px;
   border-radius: var(--radius-md);
@@ -1000,6 +999,32 @@ body {
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 13px;
+}
+
+.picker-path-input {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.btn-undo {
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+
+.btn-undo:hover:not(:disabled) {
+  background: var(--bg-surface);
+}
+
+.shortcut-hint {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-canvas);
+  margin-left: 4px;
 }
 
 .field-hint {
@@ -1072,19 +1097,6 @@ body {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-}
-
-.picker-path-input {
-  flex: 1 1 260px;
-  min-width: 0;
-  min-height: 44px;
-  padding: 0 12px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  background: var(--bg-canvas);
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: 13px;
 }
 
 .picker-quick-roots {

@@ -81,6 +81,7 @@ const els = {
   sampleFpsInput: document.getElementById("sample-fps-input"),
   minConfInput: document.getElementById("min-conf-input"),
   recursiveInput: document.getElementById("recursive-input"),
+  allowNonLatinInput: document.getElementById("allow-non-latin-input"),
   scanFormError: document.getElementById("scan-form-error"),
   openScanBtn: document.getElementById("open-scan-btn"),
   closeScanBtn: document.getElementById("close-scan-btn"),
@@ -509,7 +510,7 @@ function renderVideoList() {
           ? scan.handles.join(", ")
           : scan.filename_handle
           ? `Name: ${scan.filename_handle}`
-          : `${scan.duration_sec.toFixed(1)}s`;
+          : `${Number(scan.duration_sec || 0).toFixed(1)}s`;
       return `
         <button type="button" class="video-item ${isActive ? "active" : ""}" data-scan-id="${escapeHtml(scan.scan_id)}">
           <span class="video-item-name">${escapeHtml(scan.video_name)}</span>
@@ -548,9 +549,9 @@ function renderJobs() {
       const errHtml = job.errors.length
         ? `<div class="field-hint">${escapeHtml(job.errors[0])}</div>`
         : "";
-      const cancelBtn = isActive
+      const actionBtn = isActive
         ? `<button type="button" class="btn btn-secondary btn-compact" data-cancel-job="${escapeHtml(job.job_id)}">${job.cancel_requested ? "Stopping..." : "Cancel"}</button>`
-        : "";
+        : `<button type="button" class="btn btn-secondary btn-compact" data-dismiss-job="${escapeHtml(job.job_id)}" aria-label="Dismiss job">Dismiss</button>`;
       return `
         <div class="job-card">
           <div class="job-head">
@@ -558,7 +559,7 @@ function renderJobs() {
               <div class="job-title">${escapeHtml(statusLine)}</div>
               <div class="field-hint">${escapeHtml(countsLine)}</div>
             </div>
-            ${cancelBtn}
+            ${actionBtn}
           </div>
           ${errHtml}
           <div class="job-progress-bar">
@@ -575,6 +576,20 @@ function renderJobs() {
       btn.disabled = true;
       await fetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
       await pollJobs();
+    });
+  });
+
+  els.activeJobs.querySelectorAll("[data-dismiss-job]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const jobId = btn.getAttribute("data-dismiss-job");
+      if (!jobId) return;
+      btn.disabled = true;
+      try {
+        await fetch(`/api/jobs/${encodeURIComponent(jobId)}/dismiss`, { method: "POST" });
+        await pollJobs();
+      } catch (err) {
+        showError("Could not dismiss job", String(err));
+      }
     });
   });
 }
@@ -687,16 +702,16 @@ function renderMainContent() {
       : `<span class="field-hint">No @handles detected</span>`;
 
   const videoToggleBtn = scan.video_url
-    ? `<button type="button" id="toggle-player-btn" class="btn btn-secondary" aria-expanded="${state.showPlayer}">${state.showPlayer ? "Hide video" : "Play video"}</button>`
+    ? `<button type="button" id="toggle-player-btn" class="btn btn-secondary" aria-expanded="${state.showPlayer}">${state.showPlayer ? "Hide video" : "Play video"} <span class="shortcut-hint">Space</span></button>`
     : "";
 
   const pagerHtml =
     nav.total > 0 && nav.index >= 0
       ? `
         <div class="nav-pager" role="group" aria-label="Step through videos">
-          <button type="button" id="prev-video-btn" class="btn btn-secondary" ${nav.prevId ? "" : "disabled"}>Prev</button>
+          <button type="button" id="prev-video-btn" class="btn btn-secondary" ${nav.prevId ? "" : "disabled"}>Prev <span class="shortcut-hint">J</span></button>
           <span class="nav-pos">${nav.index + 1} / ${nav.total}</span>
-          <button type="button" id="next-video-btn" class="btn btn-secondary" ${nav.nextId ? "" : "disabled"}>Next</button>
+          <button type="button" id="next-video-btn" class="btn btn-secondary" ${nav.nextId ? "" : "disabled"}>Next <span class="shortcut-hint">K</span></button>
         </div>
       `
       : "";
@@ -704,7 +719,7 @@ function renderMainContent() {
   const moveButtonsHtml =
     scan.handles && scan.handles.length > 0
       ? scan.handles
-          .map((h) => {
+          .map((h, idx) => {
             const folderName = folderNameFromHandle(h);
             if (!folderName) return "";
             const isMoving = state.movingHandle === h;
@@ -716,7 +731,8 @@ function renderMainContent() {
               : alreadyMovedHere
               ? `In ${folderName}`
               : `Move to ${folderName}`;
-            return `<button type="button" class="btn btn-move" data-move-handle="${escapeHtml(h)}" ${state.movingHandle || !scan.video_exists ? "disabled" : ""}>${escapeHtml(label)}</button>`;
+            const shortcutHint = idx === 0 && !alreadyMovedHere ? ` <span class="shortcut-hint">M</span>` : "";
+            return `<button type="button" class="btn btn-move" data-move-handle="${escapeHtml(h)}" ${state.movingHandle || !scan.video_exists ? "disabled" : ""}>${escapeHtml(label)}${shortcutHint}</button>`;
           })
           .join("")
       : "";
@@ -739,7 +755,8 @@ function renderMainContent() {
           : alreadyMovedFn
           ? `In ${fnSuggestion} (from filename)`
           : `Move to ${fnSuggestion} (from filename)`;
-        return `<button type="button" class="btn btn-move-suggestion" data-move-handle="${escapeHtml(fnSuggestion)}" ${state.movingHandle || !scan.video_exists ? "disabled" : ""}>${escapeHtml(label)}</button>`;
+        const shortcutHint = !moveButtonsHtml && !alreadyMovedFn ? ` <span class="shortcut-hint">M</span>` : "";
+        return `<button type="button" class="btn btn-move-suggestion" data-move-handle="${escapeHtml(fnSuggestion)}" ${state.movingHandle || !scan.video_exists ? "disabled" : ""}>${escapeHtml(label)}${shortcutHint}</button>`;
       })()
     : "";
   const allMoveButtonsHtml = `${moveButtonsHtml}${fnMoveButtonHtml}`;
@@ -753,13 +770,19 @@ function renderMainContent() {
         : fb.exhausted
         ? "Moved file to folder (no more unmoved videos in this view):"
         : "Moved file to folder:";
+      const undoBtn = !fb.alreadyThere
+        ? `<button type="button" class="btn btn-secondary btn-compact btn-undo" data-undo-scan="${escapeHtml(scan.scan_id)}">Undo move <span class="shortcut-hint">U</span></button>`
+        : "";
       moveStatusBanner = `
         <div class="move-status" role="status">
           <div>
             <strong>${prefix}</strong>
             <div class="move-status-path">${escapeHtml(fb.movedTo)}</div>
           </div>
-          ${!fb.exhausted && (fb.nextScanId || nav.nextId) ? `<button type="button" id="move-next-btn" class="btn btn-secondary btn-compact">Next video</button>` : ""}
+          <div class="summary-actions" style="margin-left:auto; gap:6px;">
+            ${undoBtn}
+            ${!fb.exhausted && (fb.nextScanId || nav.nextId) ? `<button type="button" id="move-next-btn" class="btn btn-secondary btn-compact">Next video</button>` : ""}
+          </div>
         </div>
       `;
     } else {
@@ -769,7 +792,10 @@ function renderMainContent() {
             <strong>Moved ${escapeHtml(fb.videoName)} to ${escapeHtml(fb.folderName)}:</strong>
             <div class="move-status-path">${escapeHtml(fb.movedTo)}</div>
           </div>
-          <button type="button" id="view-last-moved-btn" class="btn btn-secondary btn-compact" data-jump-scan="${escapeHtml(fb.scanId)}">View moved</button>
+          <div class="summary-actions" style="margin-left:auto; gap:6px;">
+            <button type="button" class="btn btn-secondary btn-compact btn-undo" data-undo-scan="${escapeHtml(fb.scanId)}">Undo last move <span class="shortcut-hint">U</span></button>
+            <button type="button" id="view-last-moved-btn" class="btn btn-secondary btn-compact" data-jump-scan="${escapeHtml(fb.scanId)}">View moved</button>
+          </div>
         </div>
       `;
     }
@@ -780,6 +806,7 @@ function renderMainContent() {
           <strong>Current location (${escapeHtml(scan.moved_folder || "")}):</strong>
           <div class="move-status-path">${escapeHtml(scan.moved_to)}</div>
         </div>
+        <button type="button" class="btn btn-secondary btn-compact btn-undo" data-undo-scan="${escapeHtml(scan.scan_id)}">Undo move <span class="shortcut-hint">U</span></button>
       </div>
     `;
   }
@@ -862,7 +889,7 @@ function renderMainContent() {
                     <span class="entry-num">#${entry.id}</span>
                     <span class="type-badge ${badgeClass}">${badgeLabel}</span>
                   </div>
-                  <span class="entry-meta">Conf ${(entry.confidence * 100).toFixed(1)}% | ${escapeHtml(seenSpan)}</span>
+                  <span class="entry-meta">Conf ${(Number(entry.confidence || 0) * 100).toFixed(1)}% | ${escapeHtml(seenSpan)}</span>
                 </div>
 
                 <div class="ocr-box">
@@ -872,8 +899,8 @@ function renderMainContent() {
 
                 <div class="entry-controls">
                   <div class="frame-toggle" role="group" aria-label="Frame overlay mode for entry ${entry.id}">
-                    <button type="button" class="seg-btn active" data-frame-mode="boxed" data-src="${boxedUrl}">Boxed</button>
-                    <button type="button" class="seg-btn" data-frame-mode="clean" data-src="${cleanUrl}">Clean</button>
+                    <button type="button" class="seg-btn active" data-frame-mode="boxed" data-src="${boxedUrl}" aria-pressed="true">Boxed</button>
+                    <button type="button" class="seg-btn" data-frame-mode="clean" data-src="${cleanUrl}" aria-pressed="false">Clean</button>
                   </div>
 
                   ${
@@ -899,7 +926,7 @@ function renderMainContent() {
       <div class="summary-top">
         <div>
           <h2 class="video-heading">${escapeHtml(scan.video_name)}</h2>
-          <p class="meta-line">${scan.scan_mode === "handle_only" ? (scan.stopped_early ? "Handle-only (stopped early)" : "Handle-only") : "Full text"} | ${scan.width}x${scan.height} | ${scan.duration_sec.toFixed(2)}s | ${scan.fps.toFixed(1)} fps | ${scan.ocr_frames}/${scan.sampled_frames} frames OCR'd (${scan.skipped_frames} skipped) in ${scan.elapsed_sec.toFixed(2)}s</p>
+          <p class="meta-line">${scan.scan_mode === "handle_only" ? (scan.stopped_early ? "Handle-only (stopped early)" : "Handle-only") : "Full text"} | ${scan.width || 0}x${scan.height || 0} | ${Number(scan.duration_sec || 0).toFixed(2)}s | ${Number(scan.fps || 0).toFixed(1)} fps | ${scan.ocr_frames || 0}/${scan.sampled_frames || 0} frames OCR'd (${scan.skipped_frames || 0} skipped) in ${Number(scan.elapsed_sec || 0).toFixed(2)}s</p>
         </div>
         <div class="summary-actions">
           ${scan.scan_mode === "handle_only" && scan.video_exists ? '<button type="button" id="rescan-full-btn" class="btn btn-secondary">Scan full text</button>' : ""}
@@ -931,9 +958,9 @@ function renderMainContent() {
         </div>
 
         <div class="filter-tabs" role="group" aria-label="Filter text entries">
-          <button type="button" class="seg-btn ${state.entryFilter === "all" ? "active" : ""}" data-entry-filter="all">All (${entries.length})</button>
-          <button type="button" class="seg-btn ${state.entryFilter === "handles" ? "active" : ""}" data-entry-filter="handles">@Handles (${handleEntriesCount})</button>
-          <button type="button" class="seg-btn ${state.entryFilter === "text" ? "active" : ""}" data-entry-filter="text">Other text (${textOnlyCount})</button>
+          <button type="button" class="seg-btn ${state.entryFilter === "all" ? "active" : ""}" data-entry-filter="all" aria-pressed="${state.entryFilter === "all"}">All (${entries.length})</button>
+          <button type="button" class="seg-btn ${state.entryFilter === "handles" ? "active" : ""}" data-entry-filter="handles" aria-pressed="${state.entryFilter === "handles"}">@Handles (${handleEntriesCount})</button>
+          <button type="button" class="seg-btn ${state.entryFilter === "text" ? "active" : ""}" data-entry-filter="text" aria-pressed="${state.entryFilter === "text"}">Other text (${textOnlyCount})</button>
         </div>
       </div>
     `
@@ -955,6 +982,7 @@ async function moveVideoToHandle(scanId, handleName) {
 
   const preMoveFiltered = getFilteredScans();
   const sourceVideoName = state.currentScan?.video_name || scanId;
+  let didAdvance = false;
 
   // Release any active browser video stream handle so Windows does not lock the file
   const activeVideo = document.getElementById("video-player");
@@ -1003,6 +1031,7 @@ async function moveVideoToHandle(scanId, handleName) {
     }
     if (nextTargetId && state.scans.some((s) => s.scan_id === nextTargetId)) {
       state.movingHandle = null;
+      didAdvance = true;
       await selectScan(nextTargetId, { preserveFeedback: true });
       return;
     }
@@ -1013,8 +1042,43 @@ async function moveVideoToHandle(scanId, handleName) {
     showError("Could not move file", String(err.message || err));
   } finally {
     state.movingHandle = null;
+    if (!didAdvance) {
+      renderVideoList();
+      renderMainContent();
+    }
+  }
+}
+
+async function undoMoveVideo(scanId) {
+  if (!scanId) return;
+  const activeVideo = document.getElementById("video-player");
+  if (activeVideo) {
+    activeVideo.pause();
+    activeVideo.removeAttribute("src");
+    activeVideo.load();
+  }
+  hideError();
+  try {
+    const res = await fetch(`/api/scans/${encodeURIComponent(scanId)}/undo_move`, {
+      method: "POST",
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || `HTTP ${res.status}`);
+    }
+    if (state.moveFeedback && state.moveFeedback.scanId === scanId) {
+      state.moveFeedback = null;
+    }
+    if (data.scan) {
+      upsertScanSummary(data.scan);
+      if (state.currentScan && state.currentScan.scan_id === scanId) {
+        state.currentScan = data.scan;
+      }
+    }
     renderVideoList();
     renderMainContent();
+  } catch (err) {
+    showError("Could not undo move", String(err.message || err));
   }
 }
 
@@ -1069,6 +1133,17 @@ function bindMainContentEvents(nav) {
     }
   });
 
+  els.mainState.querySelectorAll("[data-undo-scan]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const scanId = btn.getAttribute("data-undo-scan");
+      if (scanId) {
+        btn.disabled = true;
+        btn.textContent = "Undoing...";
+        undoMoveVideo(scanId);
+      }
+    });
+  });
+
   els.mainState.querySelectorAll("[data-move-handle]").forEach((btn) => {
     btn.addEventListener("click", () => {
       if (state.currentScan) {
@@ -1096,6 +1171,7 @@ function bindMainContentEvents(nav) {
           recursive: false,
           skip_existing: false,
           scan_mode: "full_text",
+          allow_non_latin: Boolean(els.allowNonLatinInput?.checked),
         }),
       });
       const data = await res.json();
@@ -1171,8 +1247,11 @@ function bindMainContentEvents(nav) {
     btn.addEventListener("click", () => {
       const card = btn.closest(".entry-card");
       const src = btn.getAttribute("data-src");
-      card.querySelectorAll(".frame-toggle .seg-btn").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
+      card.querySelectorAll(".frame-toggle .seg-btn").forEach((b) => {
+        const active = b === btn;
+        b.classList.toggle("active", active);
+        b.setAttribute("aria-pressed", active ? "true" : "false");
+      });
       const previewBtn = card.querySelector(".frame-preview-btn");
       const img = previewBtn.querySelector("img");
       img.src = src;
@@ -1241,7 +1320,13 @@ async function fetchScans(selectIfEmpty = true) {
       await selectScan(filtered[0].scan_id);
     } else {
       renderVideoList();
-      renderMainContent();
+      const activeEl = document.activeElement;
+      const isUserTyping = activeEl && (activeEl.id === "custom-folder-input" || activeEl.id === "dest-root-input" || activeEl.id === "entry-search");
+      const videoEl = document.getElementById("video-player");
+      const isVideoPlaying = videoEl && !videoEl.paused;
+      if (!isUserTyping && !isVideoPlaying) {
+        renderMainContent();
+      }
     }
   } catch (err) {
     showError("Failed to fetch scans", String(err));
@@ -1258,6 +1343,10 @@ async function selectScan(scanId, options = {}) {
     state.moveFeedback = null;
   }
   renderVideoList();
+  const activeItem = els.videoList.querySelector(`[data-scan-id="${scanId}"]`);
+  if (activeItem) {
+    activeItem.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
   renderMainContent();
   try {
     const res = await fetch(`/api/scans/${encodeURIComponent(scanId)}`);
@@ -1283,6 +1372,11 @@ async function pollJobs() {
     state.lastJobSnapshot = snapshot;
 
     const stillRunning = state.jobs.some((j) => j.status === "queued" || j.status === "running");
+    const activeEl = document.activeElement;
+    const isUserTyping = activeEl && (activeEl.id === "custom-folder-input" || activeEl.id === "dest-root-input" || activeEl.id === "entry-search");
+    const videoEl = document.getElementById("video-player");
+    const isVideoPlaying = videoEl && !videoEl.paused;
+
     if (stillRunning) {
       if (progressChanged) {
         await fetchScans(!state.selectedScanId);
@@ -1291,12 +1385,14 @@ async function pollJobs() {
           state.currentScan?.scan_mode === "handle_only" &&
           state.jobs.some(
             (j) =>
-              j.status === "done" &&
+              j.status === "completed" &&
               j.scan_mode === "full_text" &&
               (j.scan_ids || []).includes(state.selectedScanId)
           )
         ) {
-          await selectScan(state.selectedScanId);
+          if (!isUserTyping && !isVideoPlaying) {
+            await selectScan(state.selectedScanId);
+          }
         }
       }
     } else {
@@ -1308,7 +1404,9 @@ async function pollJobs() {
             await selectScan(latestDone.scan_ids[0]);
           }
         } else if (state.jobs.some((j) => (j.scan_ids || []).includes(state.selectedScanId))) {
-          await selectScan(state.selectedScanId);
+          if (!isUserTyping && !isVideoPlaying) {
+            await selectScan(state.selectedScanId);
+          }
         }
       }
       if (state.pollTimer) {
@@ -1361,8 +1459,11 @@ function initEvents() {
 
   document.querySelectorAll("[data-video-filter]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll("[data-video-filter]").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
+      document.querySelectorAll("[data-video-filter]").forEach((b) => {
+        const active = b === btn;
+        b.classList.toggle("active", active);
+        b.setAttribute("aria-pressed", active ? "true" : "false");
+      });
       state.videoFilter = btn.getAttribute("data-video-filter");
       state.listRenderLimit = LIST_RENDER_STEP;
       handleSidebarFilterUpdate();
@@ -1473,6 +1574,7 @@ function initEvents() {
           recursive: Boolean(els.recursiveInput.checked),
           skip_existing: Boolean(els.skipExistingInput.checked),
           scan_mode: state.scanMode,
+          allow_non_latin: Boolean(els.allowNonLatinInput?.checked),
         }),
       });
       const data = await res.json();
@@ -1498,6 +1600,57 @@ function initEvents() {
   });
 }
 
+function initKeyboardShortcuts() {
+  window.addEventListener("keydown", (event) => {
+    const target = event.target;
+    const tag = target?.tagName?.toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select" || target?.isContentEditable) {
+      return;
+    }
+    if (els.scanDialog?.open || els.lightboxDialog?.open || els.fsPickerDialog?.open) {
+      return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey) {
+      return;
+    }
+
+    const nav = getAdjacentScanIds();
+
+    if (event.key === "ArrowLeft" || event.key === "j" || event.key === "J") {
+      if (nav.prevId) {
+        event.preventDefault();
+        selectScan(nav.prevId);
+      }
+    } else if (event.key === "ArrowRight" || event.key === "k" || event.key === "K") {
+      if (nav.nextId) {
+        event.preventDefault();
+        selectScan(nav.nextId);
+      }
+    } else if (event.key === " " || event.key === "p" || event.key === "P") {
+      if (state.currentScan?.video_url) {
+        event.preventDefault();
+        state.showPlayer = !state.showPlayer;
+        renderMainContent();
+      }
+    } else if (event.key === "m" || event.key === "M") {
+      if (state.currentScan && !state.movingHandle && state.currentScan.video_exists) {
+        const firstHandle = (state.currentScan.handles && state.currentScan.handles[0]) || state.currentScan.filename_handle;
+        if (firstHandle) {
+          event.preventDefault();
+          moveVideoToHandle(state.currentScan.scan_id, firstHandle);
+        }
+      }
+    } else if (event.key === "u" || event.key === "U") {
+      const undoScanId = state.currentScan?.moved_folder ? state.currentScan.scan_id : state.moveFeedback?.scanId;
+      if (undoScanId) {
+        event.preventDefault();
+        undoMoveVideo(undoScanId);
+      }
+    }
+  });
+}
+
 initTheme();
 initEvents();
+initKeyboardShortcuts();
 fetchScans(true);

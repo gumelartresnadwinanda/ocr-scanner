@@ -9,6 +9,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .grouping import is_standalone_handle
 from .models import DistinctTextEntry, VideoScanResult
 
 
@@ -87,7 +88,7 @@ def save_example_frames(
 
         b = best_obs.block
         bbox = (int(round(b.x1)), int(round(b.y1)), int(round(b.x2)), int(round(b.y2)))
-        is_handle = canonical.strip().startswith("@") and " " not in canonical.strip()
+        is_handle = is_standalone_handle(canonical)
         prefix = f"#{idx} HANDLE" if is_handle else f"#{idx}"
         boxed_img = draw_highlight_box(img, bbox, f"{prefix}: {canonical}", is_handle=is_handle)
 
@@ -135,8 +136,8 @@ def _render_entry_card(entry: DistinctTextEntry) -> str:
       <pre class="ocr-text">{escaped_text}</pre>
       {handles_note}
       <div class="frame-controls">
-        <button type="button" class="toggle-btn active" onclick="setFrame(this, '{boxed_src}')">Boxed</button>
-        <button type="button" class="toggle-btn" onclick="setFrame(this, '{clean_src}')">Clean Frame</button>
+        <button type="button" class="toggle-btn active" data-src="{boxed_src}">Boxed</button>
+        <button type="button" class="toggle-btn" data-src="{clean_src}">Clean Frame</button>
       </div>
       <div class="frame-wrap">
         <a href="{boxed_src}" target="_blank" class="frame-link">
@@ -346,15 +347,18 @@ def write_html_report(result: VideoScanResult, out_path: Path) -> None:
     {cards_html}
   </main>
   <script>
-    function setFrame(btn, src) {{
+    document.addEventListener('click', (e) => {{
+      const btn = e.target.closest('.toggle-btn');
+      if (!btn) return;
       const card = btn.closest('.card');
       card.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      const src = btn.getAttribute('data-src');
       const img = card.querySelector('.frame-wrap img');
       const link = card.querySelector('.frame-link');
-      img.src = src;
-      link.href = src;
-    }}
+      if (img && src) img.src = src;
+      if (link && src) link.href = src;
+    }});
   </script>
 </body>
 </html>

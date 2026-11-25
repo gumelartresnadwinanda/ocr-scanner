@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -42,6 +43,8 @@ def scan_video(
     engine: OcrEngine | None = None,
     scan_id: str | None = None,
     scan_mode: str = "full_text",
+    write_html: bool = True,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> VideoScanResult:
     """Scan one video for distinct on-screen text and save frames, JSON, and HTML report."""
     if scan_mode not in VALID_SCAN_MODES:
@@ -63,6 +66,10 @@ def scan_video(
     stopped_early = False
 
     for step in iter_sampled_frames(path, sample_fps=sample_fps):
+        if cancel_check and cancel_check():
+            stopped_early = True
+            break
+
         sampled_count += 1
         if not step.should_ocr or step.frame is None:
             skipped_count += 1
@@ -130,11 +137,12 @@ def scan_video(
         distinct_texts=distinct_entries,
         output_dir=str(out_dir.resolve()),
         json_path=str(json_path.resolve()),
-        html_path=str(html_path.resolve()),
+        html_path=str(html_path.resolve()) if write_html else "",
         scan_mode=scan_mode,
         stopped_early=stopped_early,
     )
 
     write_json_report(result, json_path)
-    write_html_report(result, html_path)
+    if write_html:
+        write_html_report(result, html_path)
     return result

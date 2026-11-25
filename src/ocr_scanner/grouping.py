@@ -12,6 +12,11 @@ STANDALONE_HANDLE_RE = re.compile(r"^@[A-Za-z0-9_.]{2,}$")
 PLATFORM_LABELS = frozenset({"tiktok", "instagram", "reels", "youtube", "shorts", "capcut"})
 BARE_HANDLE_RE = re.compile(r"^[A-Za-z0-9_.]{3,}$")
 
+
+def is_standalone_handle(text: str) -> bool:
+    """Return True if text is a single @handle token with no whitespace."""
+    return bool(STANDALONE_HANDLE_RE.match(text.strip()))
+
 _BANG_FILENAME_RE = re.compile(r"^@?([A-Za-z0-9_.]{2,50}?)!!(.+)$")
 _DUNDER_FILENAME_RE = re.compile(r"^@?([A-Za-z0-9_.]{2,50})(?:__(?!_))(.+)$")
 _TRAIL_ID_FILENAME_RE = re.compile(r"^@?([A-Za-z0-9_.]{3,50}?)_\d{5,}(?:\s*\(\d+\))?$")
@@ -252,7 +257,7 @@ def group_detections(detections: list[RawDetection]) -> list[TextBlock]:
                 x2=x2,
                 y2=y2,
                 lines=cluster,
-                is_handle=bool(STANDALONE_HANDLE_RE.match(text.strip())),
+                is_handle=is_standalone_handle(text),
                 handles=handles,
             )
         )

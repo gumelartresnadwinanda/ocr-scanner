@@ -113,11 +113,15 @@ def iter_sampled_frames(
 
         idx = 0
         while True:
+            is_target = idx == 0 or (idx % interval_frames == 0) or (total_frames > 0 and idx == total_frames - 1)
             ok = cap.grab()
             if not ok:
                 break
 
-            is_target = idx == 0 or (idx % interval_frames == 0) or (total_frames > 0 and idx == total_frames - 1)
+            if not is_target:
+                idx += 1
+                continue
+
             ret, frame = cap.retrieve()
             if not ret or frame is None:
                 idx += 1
@@ -125,33 +129,30 @@ def iter_sampled_frames(
 
             last_valid_idx = idx
             last_valid_img = frame
+            ts = idx / fps
+            thumb = _compute_thumbnail(frame)
+            if last_ocr_thumb is None:
+                should_ocr = True
+            else:
+                global_mad, max_tile = _block_max_mad(last_ocr_thumb, thumb)
+                should_ocr = global_mad >= global_diff_thresh or max_tile >= tile_diff_thresh
 
-            if is_target:
-                ts = idx / fps
-                thumb = _compute_thumbnail(frame)
-                if last_ocr_thumb is None:
-                    should_ocr = True
-                else:
-                    global_mad, max_tile = _block_max_mad(last_ocr_thumb, thumb)
-                    should_ocr = global_mad >= global_diff_thresh or max_tile >= tile_diff_thresh
-
-                if should_ocr:
-                    last_ocr_thumb = thumb
-                    yield FrameStep(
-                        frame_index=idx,
-                        timestamp_sec=ts,
-                        should_ocr=True,
-                        frame=SampledFrame(frame_index=idx, timestamp_sec=ts, image=frame),
-                    )
-                else:
-                    yield FrameStep(
-                        frame_index=idx,
-                        timestamp_sec=ts,
-                        should_ocr=False,
-                        frame=None,
-                    )
-                last_yielded_idx = idx
-
+            if should_ocr:
+                last_ocr_thumb = thumb
+                yield FrameStep(
+                    frame_index=idx,
+                    timestamp_sec=ts,
+                    should_ocr=True,
+                    frame=SampledFrame(frame_index=idx, timestamp_sec=ts, image=frame),
+                )
+            else:
+                yield FrameStep(
+                    frame_index=idx,
+                    timestamp_sec=ts,
+                    should_ocr=False,
+                    frame=None,
+                )
+            last_yielded_idx = idx
             idx += 1
 
         # Guarantee the final decoded frame is evaluated if total_frames metadata was slightly off

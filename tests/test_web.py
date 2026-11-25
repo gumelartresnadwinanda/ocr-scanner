@@ -46,6 +46,10 @@ def test_web_empty_state_and_static_assets(tmp_path: Path) -> None:
     assert "/static/styles.css?v=" in res_home.text
     assert "no-store" in res_home.headers.get("cache-control", "")
 
+    res_health = client.get("/api/health")
+    assert res_health.status_code == 200
+    assert res_health.json()["status"] == "ok"
+
     css_res = client.get("/static/styles.css")
     js_res = client.get("/static/app.js")
     assert css_res.status_code == 200
@@ -451,3 +455,93 @@ def test_web_scans_index_cache_reconciliation_and_move(tmp_path: Path) -> None:
     fresh_scans = {item["scan_id"]: item for item in fresh_client.get("/api/scans").json()["scans"]}
     assert fresh_scans["scan_a"]["moved_folder"] == "alice"
     assert fresh_scans["scan_c"]["handles"] == ["@carol"]
+
+
+def test_web_undo_move(tmp_path: Path) -> None:
+    out_root = tmp_path / "outputs"
+    src_dir = tmp_path / "source_vids"
+    src_dir.mkdir()
+    video_path = src_dir / "undo_test.mp4"
+    _make_sample_video(video_path, label="UNDO TEST", handle="@revertme")
+
+    scan_video(video_path, output_root=out_root, sample_fps=2.0)
+    app = create_app(output_root=out_root)
+    client = TestClient(app)
+
+    # 1. Move to handle folder
+    move_res = client.post("/api/scans/undo_test/move", json={"handle": "@revertme"})
+    assert move_res.status_code == 200
+    moved_path = Path(move_res.json()["moved_to"])
+    assert moved_path.is_file()
+    assert not video_path.exists()
+
+    # 2. Undo move
+    undo_res = client.post("/api/scans/undo_test/undo_move")
+    assert undo_res.status_code == 200
+    undo_data = undo_res.json()
+    assert undo_data["undone"] is True
+    assert undo_data["folder_name"] is None
+    assert undo_data["moved_to"] is None
+    assert video_path.is_file()
+    assert not moved_path.exists()
+
+    # Verify index updated
+    scans_res = client.get("/api/scans")
+    assert scans_res.status_code == 200
+    scans = scans_res.json()["scans"]
+    assert scans[0]["moved_folder"] is None
+
+    # 3. Second undo fails because there is no recorded move
+    undo_again = client.post("/api/scans/undo_test/undo_move")
+    assert undo_again.status_code == 400
+
+
+def test_web_dismiss_job(tmp_path: Path) -> None:
+    out_root = tmp_path / "outputs"
+    app = create_app(output_root=out_root)
+    client = TestClient(app)
+
+    # 404 for unknown job
+    res_unknown = client.post("/api/jobs/nonexistent-job-id/dismiss")
+    assert res_unknown.status_code == 404
+
+    # Run a small scan to get a real job
+    vid = tmp_path / "dummy.mp4"
+    _make_sample_video(vid)
+    scan_res = client.post("/api/scan", json={"path": str(vid)})
+    assert scan_res.status_code == 200
+    job_id = scan_res.json()["job_id"]
+    _wait_for_job(client, job_id)
+
+    # Job is listed
+    jobs_res = client.get("/api/jobs")
+    assert any(j["job_id"] == job_id for j in jobs_res.json()["jobs"])
+
+    # Dismiss job
+    dismiss_res = client.post(f"/api/jobs/{job_id}/dismiss")
+    assert dismiss_res.status_code == 200
+    assert dismiss_res.json() == {"dismissed": True, "job_id": job_id}
+
+    # Job no longer in listing
+    jobs_after = client.get("/api/jobs")
+    assert not any(j["job_id"] == job_id for j in jobs_after.json()["jobs"])
+
+
+def test_web_validate_local_origin(tmp_path: Path) -> None:
+    out_root = tmp_path / "outputs"
+    app = create_app(output_root=out_root)
+    client = TestClient(app)
+
+    # External cross-origin request on POST is blocked
+    blocked = client.post("/api/scan", json={"path": "dummy"}, headers={"Origin": "https://evil-site.com"})
+    assert blocked.status_code == 403
+    assert "Cross-origin requests forbidden." in blocked.json()["detail"]
+
+    # Local origin is allowed (falls through to route handler, e.g. 404/422 on bad path)
+    allowed_local = client.post("/api/scan", json={"path": "dummy"}, headers={"Origin": "http://localhost:8000"})
+    assert allowed_local.status_code != 403
+
+    # Safe GET with external Origin is not blocked
+    safe_get = client.get("/api/scans", headers={"Origin": "https://evil-site.com"})
+    assert safe_get.status_code == 200
+

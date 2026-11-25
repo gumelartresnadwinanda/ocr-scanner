@@ -18,7 +18,7 @@ from typing import Any, Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -51,6 +51,7 @@ class ScanRequest(BaseModel):
     recursive: bool = False
     skip_existing: bool = True
     scan_mode: Literal["full_text", "handle_only"] = "full_text"
+    allow_non_latin: bool = False
 
 
 class MoveRequest(BaseModel):
@@ -249,24 +250,28 @@ def _recent_dirs_from_summaries(
     summaries: list[dict[str, Any]],
     limit: int = 6,
 ) -> list[dict[str, str]]:
-    candidates: list[tuple[float, Path]] = []
+    folder_mtimes: dict[str, tuple[float, Path]] = {}
     for item in summaries:
         dir_str = item.get("source_dir")
         video_path = item.get("video_path", "")
         folder = Path(dir_str) if dir_str else (Path(video_path).parent if video_path else None)
-        if folder is not None and folder.is_dir():
-            candidates.append((float(item.get("mtime", 0.0)), folder))
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    seen: set[str] = set()
+        if folder is None:
+            continue
+        key = str(folder).lower() if os.name == "nt" else str(folder)
+        mtime = float(item.get("mtime", 0.0))
+        if key not in folder_mtimes or mtime > folder_mtimes[key][0]:
+            folder_mtimes[key] = (mtime, folder)
+
+    candidates = sorted(folder_mtimes.values(), key=lambda item: item[0], reverse=True)
     recent: list[dict[str, str]] = []
     for _, folder in candidates:
-        key = str(folder).lower() if os.name == "nt" else str(folder)
-        if key in seen:
+        try:
+            if folder.is_dir():
+                recent.append({"name": folder.name or str(folder), "path": str(folder), "kind": "recent"})
+                if len(recent) >= limit:
+                    break
+        except OSError:
             continue
-        seen.add(key)
-        recent.append({"name": folder.name or str(folder), "path": str(folder), "kind": "recent"})
-        if len(recent) >= limit:
-            break
     return recent
 
 
@@ -276,32 +281,23 @@ def _collect_recent_dirs(output_root: Path, limit: int = 6) -> list[dict[str, st
     cached = _read_scans_index(output_root)
     if cached is not None:
         return _recent_dirs_from_summaries(list(cached.values()), limit=limit)
-    candidates: list[tuple[float, Path]] = []
+    summaries: list[dict[str, Any]] = []
     for child in output_root.iterdir():
         result_file = child / "result.json"
         if not child.is_dir() or not result_file.is_file():
             continue
         try:
             raw = json.loads(result_file.read_text(encoding="utf-8"))
-            dir_str = raw.get("source_dir")
-            folder = Path(dir_str) if dir_str else Path(raw.get("video_path", "")).parent
-            if folder.is_dir():
-                candidates.append((result_file.stat().st_mtime, folder))
+            summaries.append(
+                {
+                    "source_dir": raw.get("source_dir", ""),
+                    "video_path": raw.get("video_path", ""),
+                    "mtime": result_file.stat().st_mtime,
+                }
+            )
         except Exception:
             continue
-
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    seen: set[str] = set()
-    recent: list[dict[str, str]] = []
-    for _, folder in candidates:
-        key = str(folder).lower() if os.name == "nt" else str(folder)
-        if key in seen:
-            continue
-        seen.add(key)
-        recent.append({"name": folder.name or str(folder), "path": str(folder), "kind": "recent"})
-        if len(recent) >= limit:
-            break
-    return recent
+    return _recent_dirs_from_summaries(summaries, limit=limit)
 
 
 def _collect_quick_places(output_root: Path) -> dict[str, Any]:
@@ -391,12 +387,36 @@ def _list_directory_entries(target: Path, mode: str) -> dict[str, Any]:
     }
 
 
-def _existing_scans_index(output_root: Path) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
-    """Return (resolved_video_path_lower -> (scan_id, scan_mode), scan_id -> resolved_video_path_lower)."""
+def _existing_scans_index_from_summaries(
+    summaries: list[dict[str, Any]],
+) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
     by_video_path: dict[str, tuple[str, str]] = {}
     by_scan_id: dict[str, str] = {}
+    for entry in summaries:
+        vp_str = entry.get("video_path", "")
+        if not vp_str:
+            continue
+        try:
+            vp = str(Path(vp_str).resolve()).lower()
+        except OSError:
+            vp = str(vp_str).lower()
+        scan_id = entry.get("scan_id", "")
+        mode = str(entry.get("scan_mode") or "full_text")
+        if scan_id:
+            by_video_path[vp] = (scan_id, mode)
+            by_scan_id[scan_id] = vp
+    return by_video_path, by_scan_id
+
+
+def _existing_scans_index(output_root: Path) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+    """Return (resolved_video_path_lower -> (scan_id, scan_mode), scan_id -> resolved_video_path_lower)."""
     if not output_root.is_dir():
-        return by_video_path, by_scan_id
+        return {}, {}
+    cached = _read_scans_index(output_root)
+    if cached is not None:
+        return _existing_scans_index_from_summaries(list(cached.values()))
+    by_video_path: dict[str, tuple[str, str]] = {}
+    by_scan_id: dict[str, str] = {}
     for child in output_root.iterdir():
         if not child.is_dir():
             continue
@@ -456,6 +476,24 @@ def create_app(output_root: str | Path = "outputs") -> FastAPI:
         if req_path == "/" or req_path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         return response
+
+    @app.middleware("http")
+    async def validate_local_origin(request: Any, call_next: Any) -> Any:
+        if request.method in {"POST", "PUT", "DELETE"}:
+            origin = request.headers.get("origin")
+            if origin:
+                lower_origin = origin.lower()
+                allowed = (
+                    lower_origin.startswith("http://127.0.0.1:")
+                    or lower_origin.startswith("http://localhost:")
+                    or lower_origin in {"http://127.0.0.1", "http://localhost"}
+                )
+                if not allowed:
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "Cross-origin requests forbidden."},
+                    )
+        return await call_next(request)
 
     jobs_lock = threading.Lock()
     engine_lock = threading.Lock()
@@ -533,10 +571,10 @@ def create_app(output_root: str | Path = "outputs") -> FastAPI:
                     _write_scans_index(root_path, index_entries)
                 return list(index_entries.values())
 
-    def get_engine(min_confidence: float) -> OcrEngine:
-        key = (round(min_confidence, 2), True)
+    def get_engine(min_confidence: float, latin_only: bool = True) -> OcrEngine:
+        key = (round(min_confidence, 2), latin_only)
         if key not in shared_engine:
-            shared_engine[key] = OcrEngine(min_confidence=min_confidence, latin_only=True)
+            shared_engine[key] = OcrEngine(min_confidence=min_confidence, latin_only=latin_only)
         return shared_engine[key]
 
     def run_job(
@@ -546,11 +584,12 @@ def create_app(output_root: str | Path = "outputs") -> FastAPI:
         min_confidence: float,
         skip_existing: bool,
         scan_mode: str,
+        allow_non_latin: bool = False,
     ) -> None:
         with jobs_lock:
             job.status = "running"
 
-        by_video_path, by_scan_id = _existing_scans_index(root_path)
+        by_video_path, by_scan_id = _existing_scans_index_from_summaries(_reconcile_index())
 
         for video in videos:
             with jobs_lock:
@@ -575,23 +614,31 @@ def create_app(output_root: str | Path = "outputs") -> FastAPI:
             target_scan_id = _resolve_scan_id(video, by_scan_id)
             preserved_move = _preserve_move_metadata(root_path / target_scan_id)
             try:
-                with engine_lock:
-                    engine = get_engine(min_confidence)
-                    result = scan_video(
-                        video_path=video,
-                        output_root=root_path,
-                        sample_fps=sample_fps,
-                        min_confidence=min_confidence,
-                        engine=engine,
-                        scan_id=target_scan_id,
-                        scan_mode=scan_mode,
-                    )
+                engine = get_engine(min_confidence, latin_only=not allow_non_latin)
+                result = scan_video(
+                    video_path=video,
+                    output_root=root_path,
+                    sample_fps=sample_fps,
+                    min_confidence=min_confidence,
+                    latin_only=not allow_non_latin,
+                    engine=engine,
+                    scan_id=target_scan_id,
+                    scan_mode=scan_mode,
+                    write_html=False,
+                    cancel_check=lambda: job.cancel_requested,
+                )
+                if job.cancel_requested:
+                    with jobs_lock:
+                        job.status = "cancelled"
+                        job.current_video = None
+                    return
+
                 scan_dir = Path(result.output_dir)
                 saved = _load_scan_json(scan_dir)
                 if preserved_move:
                     saved.update(preserved_move)
                     _save_scan_json_raw(scan_dir, saved)
-                _upsert_index_entry(scan_dir, saved, save=True)
+                _upsert_index_entry(scan_dir, saved, save=False)
 
                 by_video_path[resolved_key] = (target_scan_id, scan_mode)
                 by_scan_id[target_scan_id] = resolved_key
@@ -599,10 +646,17 @@ def create_app(output_root: str | Path = "outputs") -> FastAPI:
                     job.scan_ids.append(scan_dir.name)
                     job.scanned_count += 1
                     job.done_count += 1
+
+                if job.scanned_count % 10 == 0:
+                    with index_lock:
+                        _write_scans_index(root_path, index_entries)
             except Exception as exc:
                 with jobs_lock:
                     job.errors.append(f"{video.name}: {exc}")
                     job.done_count += 1
+
+        with index_lock:
+            _write_scans_index(root_path, index_entries)
 
         with jobs_lock:
             job.current_video = None
@@ -612,6 +666,10 @@ def create_app(output_root: str | Path = "outputs") -> FastAPI:
                 job.status = "failed"
             else:
                 job.status = "completed"
+
+    @app.get("/api/health")
+    def health() -> dict[str, Any]:
+        return {"status": "ok", "app": "ocr-scanner", "version": "0.2.0"}
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
@@ -700,6 +758,51 @@ def create_app(output_root: str | Path = "outputs") -> FastAPI:
             "scan": _load_scan_json(scan_dir),
         }
 
+    @app.post("/api/scans/{scan_id}/undo_move")
+    def undo_move_scan_video(scan_id: str) -> dict[str, Any]:
+        scan_dir = _safe_scan_dir(root_path, scan_id)
+        data = _load_scan_json(scan_dir)
+        moved_to = data.get("moved_to")
+        source_dir = data.get("source_dir")
+        if not moved_to or not source_dir:
+            raise HTTPException(status_code=400, detail="Scan does not have a recorded move to undo.")
+
+        curr_path = Path(moved_to)
+        if not curr_path.is_file():
+            raise HTTPException(status_code=404, detail=f"Moved video not found on disk: {curr_path}")
+
+        target_dir = Path(source_dir)
+        target_path = target_dir / curr_path.name
+
+        if curr_path.resolve() != target_path.resolve():
+            if target_path.exists():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Target file already exists in original folder: {target_path}",
+                )
+            target_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.move(str(curr_path), str(target_path))
+            except PermissionError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail="File is locked by another process. Pause video playback and retry.",
+                ) from exc
+
+        data["video_path"] = str(target_path)
+        data["moved_folder"] = None
+        data["moved_to"] = None
+        data["moved_at"] = None
+        _save_scan_json_raw(scan_dir, data)
+        _upsert_index_entry(scan_dir, data, save=True)
+
+        return {
+            "undone": True,
+            "folder_name": None,
+            "moved_to": None,
+            "scan": _load_scan_json(scan_dir),
+        }
+
     @app.get("/api/video/{scan_id}")
     def stream_video(scan_id: str) -> FileResponse:
         scan_dir = _safe_scan_dir(root_path, scan_id)
@@ -731,6 +834,7 @@ def create_app(output_root: str | Path = "outputs") -> FastAPI:
                 payload.min_confidence,
                 payload.skip_existing,
                 payload.scan_mode,
+                payload.allow_non_latin,
             ),
             daemon=True,
         )
@@ -746,6 +850,14 @@ def create_app(output_root: str | Path = "outputs") -> FastAPI:
             if job.status in {"queued", "running"}:
                 job.cancel_requested = True
             return job.to_dict()
+
+    @app.post("/api/jobs/{job_id}/dismiss")
+    def dismiss_job(job_id: str) -> dict[str, Any]:
+        with jobs_lock:
+            if job_id in jobs:
+                del jobs[job_id]
+                return {"dismissed": True, "job_id": job_id}
+            raise HTTPException(status_code=404, detail="Scan job not found.")
 
     @app.get("/api/jobs")
     def list_jobs() -> dict[str, Any]:

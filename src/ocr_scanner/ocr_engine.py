@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import unicodedata
 
 import numpy as np
@@ -45,6 +46,7 @@ class OcrEngine:
     ) -> None:
         self.min_confidence = min_confidence
         self.latin_only = latin_only
+        self._lock = threading.Lock()
         threads = min(6, max(2, (os.cpu_count() or 4) // 2))
         self._engine = RapidOCR(
             params={
@@ -57,7 +59,8 @@ class OcrEngine:
 
     def detect(self, image: np.ndarray) -> list[RawDetection]:
         """Run OCR on a BGR frame and return filtered line detections."""
-        result = self._engine(image)
+        with self._lock:
+            result = self._engine(image)
         if not result.txts or result.boxes is None or result.scores is None:
             return []
 

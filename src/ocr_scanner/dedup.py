@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from rapidfuzz import fuzz
 
-from .grouping import extract_handles
+from .grouping import extract_handles, is_standalone_handle
 from .models import BlockObservation, DistinctTextEntry
 
 _SPLIT_HANDLE_RE = re.compile(r"^@\s+([A-Za-z0-9_.]{2,})$")
@@ -252,10 +252,11 @@ def deduplicate_observations(
     clusters = _merge_handle_and_truncated_variants(clusters)
 
     results: list[tuple[_Cluster, str, BlockObservation]] = []
-    for cluster in sorted(clusters, key=lambda c: (c.first_seen_sec, c.best_observation(c.canonical_text(), frame_w, frame_h).block.y1)):
-        canonical = cluster.canonical_text()
-        best_obs = cluster.best_observation(canonical, frame_w, frame_h)
-        results.append((cluster, canonical, best_obs))
+    for cluster in clusters:
+        canon = cluster.canonical_text()
+        best_obs = cluster.best_observation(canon, frame_w, frame_h)
+        results.append((cluster, canon, best_obs))
+    results.sort(key=lambda item: (item[0].first_seen_sec, item[2].block.y1))
     return results
 
 
@@ -278,7 +279,7 @@ def build_distinct_entries(
                     last_seen = max(last_seen, last_seen_overrides[o.frame_index])
 
         handles = extract_handles(canonical)
-        is_handle = canonical.strip().startswith("@") and len(handles) == 1 and " " not in canonical.strip()
+        is_handle = is_standalone_handle(canonical)
         b = best_obs.block
         entries.append(
             DistinctTextEntry(
